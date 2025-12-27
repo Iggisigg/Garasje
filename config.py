@@ -10,7 +10,11 @@ from pathlib import Path
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
 
-    # Tesla Configuration
+    # Tesla Fleet API Configuration
+    tesla_client_id: str = ""
+    tesla_client_secret: str = ""
+
+    # Legacy (for fallback/reference)
     tesla_email: str = ""
     tesla_cache_file: str = "data/tesla_cache.json"
 

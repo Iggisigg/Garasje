@@ -13,8 +13,9 @@ venv/
 env/
 ENV/
 
-# Runtime data
-data/
+# Runtime data (exclude everything in data/ except website/)
+data/*
+!data/website/
 *.db
 *.sqlite
 *.sqlite3

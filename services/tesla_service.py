@@ -1,87 +1,178 @@
 """
-Tesla API service with mock mode support
+Tesla Fleet API service with mock mode support
+
+Fleet API documentation: https://developer.tesla.com/docs/fleet-api
 """
 
 import math
 import time
-from datetime import datetime
+import json
+import secrets
+import hashlib
+import base64
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
+from urllib.parse import urlencode
+
+import httpx
 
 from services.base_service import BaseVehicleService
 from models.vehicle import VehicleStatus
-from utils.exceptions import TeslaAPIError, TeslaAuthenticationError, VehicleAsleepError
+from utils.exceptions import TeslaAPIError, TeslaAuthenticationError
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class TeslaService(BaseVehicleService):
-    """Tesla API service"""
+class TeslaFleetService(BaseVehicleService):
+    """Tesla Fleet API service"""
+
+    # Fleet API endpoints
+    AUTH_URL = "https://auth.tesla.com/oauth2/v3"
+    API_URL = "https://fleet-api.prd.eu.vn.cloud.tesla.com"  # EU region
 
     def __init__(
         self,
-        email: str,
+        client_id: str,
+        client_secret: str,
         cache_file: str = "data/tesla_cache.json",
         mock_mode: bool = False
     ):
         """
-        Initialize Tesla service
+        Initialize Tesla Fleet API service
 
         Args:
-            email: Tesla account email
-            cache_file: Path to cache file for OAuth tokens
+            client_id: Tesla Developer App Client ID
+            client_secret: Tesla Developer App Client Secret
+            cache_file: Path to token cache file
             mock_mode: Use mock data instead of real API
         """
         super().__init__("Tesla Model Y", mock_mode)
-        self.email = email
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.cache_file = Path(cache_file)
-        self.tesla = None
-        self.vehicle = None
+        self.access_token: Optional[str] = None
+        self.refresh_token: Optional[str] = None
+        self.token_expires_at: Optional[datetime] = None
+        self.vehicle_id: Optional[str] = None
         self.last_fetch_time: Optional[datetime] = None
         self.cached_status: Optional[VehicleStatus] = None
-        self.cache_duration_seconds = 300  # Cache for 5 minutes
+        self.cache_duration_seconds = 300  # 5 minutes
 
-    async def authenticate(self):
-        """
-        Authenticate with Tesla API using OAuth
+        # Load cached tokens if available
+        self._load_tokens()
 
-        Raises:
-            TeslaAuthenticationError: If authentication fails
-        """
-        if self.mock_mode:
-            self.logger.info("Mock mode enabled - skipping Tesla authentication")
+    def _load_tokens(self):
+        """Load tokens from cache file"""
+        if not self.cache_file.exists():
             return
 
         try:
-            import teslapy
+            with open(self.cache_file, 'r') as f:
+                data = json.load(f)
+                self.access_token = data.get('access_token')
+                self.refresh_token = data.get('refresh_token')
+                self.vehicle_id = data.get('vehicle_id')
 
-            # Ensure cache directory exists
+                expires_str = data.get('expires_at')
+                if expires_str:
+                    self.token_expires_at = datetime.fromisoformat(expires_str)
+
+                self.logger.debug("Loaded tokens from cache")
+        except Exception as e:
+            self.logger.warning(f"Failed to load token cache: {e}")
+
+    def _save_tokens(self):
+        """Save tokens to cache file"""
+        try:
             self.cache_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # Initialize Tesla API
-            self.tesla = teslapy.Tesla(self.email, cache_file=str(self.cache_file))
+            data = {
+                'access_token': self.access_token,
+                'refresh_token': self.refresh_token,
+                'vehicle_id': self.vehicle_id,
+                'expires_at': self.token_expires_at.isoformat() if self.token_expires_at else None
+            }
 
-            # Check if we need to authenticate
-            if not self.tesla.authorized:
-                self.logger.warning("Tesla token not found or expired. Run scripts/setup_tesla.py first.")
+            with open(self.cache_file, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            self.logger.debug("Saved tokens to cache")
+        except Exception as e:
+            self.logger.error(f"Failed to save token cache: {e}")
+
+    def _is_token_valid(self) -> bool:
+        """Check if access token is still valid"""
+        if not self.access_token or not self.token_expires_at:
+            return False
+
+        # Add 60 second buffer
+        return datetime.now() < (self.token_expires_at - timedelta(seconds=60))
+
+    async def authenticate(self):
+        """
+        Authenticate with Tesla Fleet API
+
+        For the first time, this requires running scripts/setup_tesla_fleet.py
+        to complete the OAuth flow and obtain tokens.
+
+        For subsequent calls, this will refresh the token if needed.
+        """
+        if self.mock_mode:
+            self.logger.info("Mock mode - skipping authentication")
+            return
+
+        # Check if we need to refresh
+        if self._is_token_valid():
+            self.logger.debug("Token still valid")
+            return
+
+        # Try to refresh token
+        if self.refresh_token:
+            try:
+                await self._refresh_access_token()
+                return
+            except Exception as e:
+                self.logger.warning(f"Token refresh failed: {e}")
+
+        # No valid tokens - need to run setup script
+        raise TeslaAuthenticationError(
+            "No valid tokens found. Please run: python scripts/setup_tesla_fleet.py"
+        )
+
+    async def _refresh_access_token(self):
+        """Refresh access token using refresh token"""
+        self.logger.info("Refreshing access token...")
+
+        data = {
+            'grant_type': 'refresh_token',
+            'client_id': self.client_id,
+            'refresh_token': self.refresh_token
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.AUTH_URL}/token",
+                data=data,
+                headers={'Content-Type': 'application/x-www-form-urlencoded'}
+            )
+
+            if response.status_code != 200:
                 raise TeslaAuthenticationError(
-                    "Not authenticated. Please run 'python scripts/setup_tesla.py' to complete OAuth flow."
+                    f"Token refresh failed: {response.status_code} - {response.text}"
                 )
 
-            # Get list of vehicles
-            vehicles = self.tesla.vehicle_list()
-            if not vehicles:
-                raise TeslaAuthenticationError("No vehicles found in Tesla account")
+            token_data = response.json()
+            self.access_token = token_data['access_token']
+            self.refresh_token = token_data.get('refresh_token', self.refresh_token)
 
-            # Use first vehicle (can be extended for multiple vehicles)
-            self.vehicle = vehicles[0]
-            self.logger.info(f"Connected to Tesla: {self.vehicle['display_name']}")
+            # Calculate expiration
+            expires_in = token_data.get('expires_in', 3600)
+            self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-        except ImportError:
-            raise TeslaAuthenticationError("teslapy library not installed. Run: pip install teslapy")
-        except Exception as e:
-            raise TeslaAuthenticationError(f"Tesla authentication failed: {e}")
+            self._save_tokens()
+            self.logger.info("✓ Access token refreshed")
 
     async def get_vehicle_status(self) -> VehicleStatus:
         """
@@ -89,20 +180,20 @@ class TeslaService(BaseVehicleService):
 
         Returns:
             VehicleStatus with current battery data
-
-        Raises:
-            TeslaAPIError: If unable to fetch data
         """
         if self.mock_mode:
             return self._get_mock_data()
 
-        # Check cache first
+        # Check cache
         if self._is_cache_valid():
             self.logger.debug("Using cached Tesla data")
             return self.cached_status
 
         try:
-            # Fetch fresh data from Tesla API
+            # Ensure we're authenticated
+            await self.authenticate()
+
+            # Get vehicle data
             status = await self._fetch_from_api()
 
             # Update cache
@@ -114,9 +205,9 @@ class TeslaService(BaseVehicleService):
         except Exception as e:
             self.logger.error(f"Failed to fetch Tesla data: {e}")
 
-            # Return cached data if available, even if expired
+            # Return cached data if available
             if self.cached_status:
-                self.logger.warning("Returning stale cached data due to API error")
+                self.logger.warning("Returning stale cached data")
                 return self.cached_status
 
             raise TeslaAPIError(f"Failed to fetch Tesla data: {e}")
@@ -131,22 +222,42 @@ class TeslaService(BaseVehicleService):
 
     async def _fetch_from_api(self) -> VehicleStatus:
         """
-        Fetch data from Tesla API
+        Fetch data from Tesla Fleet API
 
         Returns:
             VehicleStatus with fresh data
-
-        Raises:
-            TeslaAPIError: If fetch fails
         """
-        if not self.vehicle:
-            await self.authenticate()
+        # Get vehicle ID if we don't have it
+        if not self.vehicle_id:
+            await self._get_vehicle_id()
 
-        try:
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json'
+        }
+
+        async with httpx.AsyncClient() as client:
             # Get vehicle data
-            # Note: This may wake the vehicle if it's asleep
-            # For production, check vehicle state first
-            data = self.vehicle.get_vehicle_data()
+            response = await client.get(
+                f"{self.API_URL}/api/1/vehicles/{self.vehicle_id}/vehicle_data",
+                headers=headers,
+                timeout=30.0
+            )
+
+            if response.status_code == 408:
+                # Vehicle is asleep
+                self.logger.warning("Vehicle is asleep")
+                # Return last known data or mock data
+                if self.cached_status:
+                    return self.cached_status
+                raise TeslaAPIError("Vehicle is asleep and no cached data available")
+
+            if response.status_code != 200:
+                raise TeslaAPIError(
+                    f"Fleet API error: {response.status_code} - {response.text}"
+                )
+
+            data = response.json()['response']
 
             # Extract charge state
             charge_state = data.get('charge_state', {})
@@ -154,14 +265,13 @@ class TeslaService(BaseVehicleService):
             battery_range = charge_state.get('battery_range', 0)
             charging_state = charge_state.get('charging_state', 'Disconnected')
             is_charging = charging_state in ['Charging', 'Starting']
+            charger_power = charge_state.get('charger_power', 0)
 
-            # Convert miles to km (Tesla API returns miles)
+            # Convert miles to km
             range_km = battery_range * 1.60934
 
-            # Determine location (simplified - could use geofencing)
-            drive_state = data.get('drive_state', {})
-            # For now, assume home if not driving
-            location = "home"  # Could check coordinates against home location
+            # Determine location (simplified)
+            location = "home"  # Could implement geofencing
 
             return VehicleStatus(
                 vehicle_name=data.get('display_name', 'Tesla Model Y'),
@@ -171,12 +281,42 @@ class TeslaService(BaseVehicleService):
                 location=location,
                 last_updated=datetime.now(),
                 is_mock=False,
-                charging_rate_kw=charge_state.get('charger_power') if is_charging else None
+                charging_rate_kw=charger_power if is_charging else None
             )
 
-        except Exception as e:
-            self.logger.error(f"Tesla API error: {e}")
-            raise TeslaAPIError(f"Failed to fetch from Tesla API: {e}")
+    async def _get_vehicle_id(self):
+        """Get vehicle ID from Fleet API"""
+        self.logger.info("Getting vehicle ID...")
+
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json'
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.API_URL}/api/1/vehicles",
+                headers=headers,
+                timeout=30.0
+            )
+
+            if response.status_code != 200:
+                raise TeslaAPIError(
+                    f"Failed to get vehicles: {response.status_code} - {response.text}"
+                )
+
+            data = response.json()
+            vehicles = data.get('response', [])
+
+            if not vehicles:
+                raise TeslaAPIError("No vehicles found in account")
+
+            # Use first vehicle
+            self.vehicle_id = str(vehicles[0]['id'])
+            self.logger.info(f"✓ Found vehicle: {vehicles[0].get('display_name')} (ID: {self.vehicle_id})")
+
+            # Save vehicle ID to cache
+            self._save_tokens()
 
     def _get_mock_data(self) -> VehicleStatus:
         """
@@ -186,7 +326,6 @@ class TeslaService(BaseVehicleService):
             VehicleStatus with simulated data
         """
         # Simulate gradual battery changes using sine wave
-        # This creates realistic-looking battery percentage changes over time
         base_battery = 70.0
         time_factor = time.time() / 3600  # Hours since epoch
         variance = math.sin(time_factor) * 20  # ±20% variance
@@ -211,30 +350,10 @@ class TeslaService(BaseVehicleService):
             charging_rate_kw=11.0 if is_charging else None
         )
 
-    async def wake_vehicle(self) -> bool:
-        """
-        Wake vehicle from sleep
-
-        Returns:
-            True if vehicle is awake, False otherwise
-
-        Raises:
-            VehicleAsleepError: If unable to wake vehicle
-        """
-        if self.mock_mode:
-            return True
-
-        try:
-            self.vehicle.sync_wake_up()
-            self.logger.info("Tesla woken up successfully")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to wake Tesla: {e}")
-            raise VehicleAsleepError(f"Could not wake vehicle: {e}")
-
     async def close(self):
         """Close Tesla connection"""
-        self.tesla = None
-        self.vehicle = None
-        self.logger.info("Tesla service closed")
+        self.logger.info("Tesla Fleet service closed")
+
+
+# For backwards compatibility - use new class name
+TeslaService = TeslaFleetService

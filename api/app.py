@@ -54,9 +54,10 @@ async def lifespan(app: FastAPI):
     await database.initialize()
 
     # Initialize Tesla service
-    logger.info(f"Initializing Tesla service (mock_mode={config.mock_mode})...")
+    logger.info(f"Initializing Tesla Fleet API service (mock_mode={config.mock_mode})...")
     tesla_service = TeslaService(
-        email=config.tesla_email,
+        client_id=config.tesla_client_id,
+        client_secret=config.tesla_client_secret,
         cache_file=config.tesla_cache_file,
         mock_mode=config.mock_mode
     )
