@@ -347,3 +347,4 @@ For spørsmål eller problemer, sjekk:
 
 **Versjon**: 1.0.0 (Tesla MVP)
 **Sist oppdatert**: 2025-12-27
+# Garasje
