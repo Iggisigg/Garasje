@@ -72,8 +72,9 @@ cp .env.example .env
 Rediger `.env` filen:
 
 ```env
-# Tesla Configuration
-TESLA_EMAIL=din_email@example.com
+# Tesla Fleet API Configuration
+TESLA_CLIENT_ID=din_client_id
+TESLA_CLIENT_SECRET=din_client_secret
 
 # Application Configuration
 MOCK_MODE=true  # Sett til 'false' for ekte Tesla data
@@ -103,28 +104,41 @@ Du vil se simulerte Tesla-data som endrer seg over tid.
 
 ### Alternativ 2: Ekte Tesla Data
 
-1. **Sett opp Tesla OAuth** (kun første gang):
-```bash
-python scripts/setup_tesla.py
-```
+#### Forutsetninger:
+- Tesla konto
+- Registrert Tesla Developer app på https://developer.tesla.com
 
-Dette vil:
-- Åpne en browser for Tesla-innlogging
-- Be om autorisasjon
-- Lagre OAuth token til `data/tesla_cache.json`
+#### Setup (kun første gang):
 
-2. **Aktiver ekte modus**:
+1. **Registrer Tesla Developer App**:
+   - Gå til https://developer.tesla.com
+   - Opprett en ny app
+   - Sett Redirect URI til: `http://localhost:8000/callback`
+   - Kopier Client ID og Client Secret
+
+2. **Konfigurer .env**:
 ```bash
-# I .env, sett:
+TESLA_CLIENT_ID=<din_client_id>
+TESLA_CLIENT_SECRET=<din_client_secret>
 MOCK_MODE=false
 ```
 
-3. **Start applikasjonen**:
+3. **Kjør OAuth setup**:
+```bash
+python scripts/setup_tesla_fleet.py
+```
+
+Dette vil:
+- Åpne browser for Tesla-innlogging
+- Be om autorisasjon
+- Lagre OAuth token til `data/tesla_cache.json`
+
+4. **Start applikasjonen**:
 ```bash
 python main.py
 ```
 
-4. **Åpne dashboard**:
+5. **Åpne dashboard**:
 ```
 http://localhost:8000
 ```
@@ -187,12 +201,18 @@ charging-manager/
 │   ├── logger.py         # Logging
 │   └── exceptions.py     # Custom exceptions
 │
-├── scripts/              # Hjelpeskript
-│   └── setup_tesla.py    # Tesla OAuth setup
+├── scripts/                    # Hjelpeskript
+│   ├── setup_tesla_fleet.py   # Tesla Fleet API OAuth setup
+│   ├── register_tesla_account.py  # Partner registrering
+│   └── generate_keys.py       # Generer krypteringsnøkler
 │
-└── data/                 # Runtime data (opprettes automatisk)
-    ├── charging_manager.db
-    ├── tesla_cache.json
+└── data/                       # Runtime data (opprettes automatisk)
+    ├── charging_manager.db     # SQLite database
+    ├── tesla_cache.json        # OAuth tokens
+    ├── website/                # Public key hosting (for GitHub Pages/Vercel)
+    │   ├── index.html
+    │   └── .well-known/appspecific/
+    │       └── com.tesla.3p.public-key.pem
     └── logs/
         └── app.log
 ```
@@ -241,9 +261,14 @@ Gamle data (>90 dager) slettes automatisk hver natt kl 03:00.
 ## 🐛 Feilsøking
 
 ### "Tesla authentication failed"
-- Sørg for at du har kjørt `python scripts/setup_tesla.py`
-- Sjekk at `TESLA_EMAIL` er korrekt i `.env`
+- Sørg for at du har kjørt `python scripts/setup_tesla_fleet.py`
+- Sjekk at `TESLA_CLIENT_ID` og `TESLA_CLIENT_SECRET` er korrekt i `.env`
 - Token kan ha utløpt - kjør setup på nytt
+
+### "Account must be registered in the current region"
+- Tesla Fleet API krever partner registrering
+- Dette krever et offentlig domene for å hoste en public key
+- Se seksjonen om Tesla Fleet API setup i README
 
 ### "WebSocket frakoblet"
 - Sjekk nettverkstilkobling
