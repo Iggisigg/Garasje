@@ -52,7 +52,8 @@ def get_authorization_url(client_id: str, code_challenge: str, state: str) -> st
         'scope': 'openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds',
         'state': state,
         'code_challenge': code_challenge,
-        'code_challenge_method': 'S256'
+        'code_challenge_method': 'S256',
+        'prompt': 'login'  # Force login to show consent screen
     }
 
     return f"{AUTH_URL}/authorize?{urlencode(params)}"
