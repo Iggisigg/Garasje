@@ -1,9 +1,15 @@
 {
   "version": 2,
-  "buildCommand": null,
-  "outputDirectory": "data/website",
-  "installCommand": null,
-  "framework": null,
-  "devCommand": null,
-  "public": true
+  "builds": [
+    {
+      "src": "data/website/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/data/website/$1"
+    }
+  ]
 }

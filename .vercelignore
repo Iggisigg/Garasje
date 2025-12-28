@@ -1,0 +1,11 @@
+# Ignore Python project files - we only want to serve static files
+requirements.txt
+.python-version
+*.py
+__pycache__/
+venv/
+.env
+*.db
+
+# Only serve the website directory
+!data/website/
