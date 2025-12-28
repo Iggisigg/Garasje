@@ -66,7 +66,7 @@ def register_account(access_token: str):
         f"{API_URL}/api/1/partner_accounts",
         headers=headers,
         json={
-            'domain': 'example.com'  # Development placeholder
+            'domain': 'garasje-mkb64nc26-sigurds-projects-577df441.vercel.app'  # Development placeholder
         },
         timeout=30.0
     )
