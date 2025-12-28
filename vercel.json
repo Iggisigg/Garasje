@@ -1,7 +1,9 @@
 {
+  "version": 2,
   "buildCommand": null,
   "outputDirectory": "data/website",
   "installCommand": null,
   "framework": null,
-  "devCommand": null
+  "devCommand": null,
+  "public": true
 }

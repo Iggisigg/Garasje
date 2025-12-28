@@ -60,13 +60,12 @@ def register_account(access_token: str):
     }
 
     # POST to partner_accounts endpoint
-    # Note: For development, using example.com as placeholder
-    # This is a common practice for testing/development apps
+    # Using Vercel deployment URL
     response = httpx.post(
         f"{API_URL}/api/1/partner_accounts",
         headers=headers,
         json={
-            'domain': 'garasje-mkb64nc26-sigurds-projects-577df441.vercel.app'  # Development placeholder
+            'domain': 'garasje-mkb64nc26-sigurds-projects-577df441.vercel.app'
         },
         timeout=30.0
     )
