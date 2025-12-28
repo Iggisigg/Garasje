@@ -2,7 +2,8 @@
 Database operations using SQLAlchemy with async support
 """
 
-from datetime import datetime, timedelta
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, create_engine, select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -70,6 +71,7 @@ class Database:
         self.database_url = database_url
         self.engine = None
         self.session_maker = None
+        self._in_error_handler = False  # Prevent recursive error logging
 
     async def initialize(self):
         """Initialize database engine and create tables"""
@@ -137,7 +139,9 @@ class Database:
 
         except Exception as e:
             logger.error(f"Failed to save battery reading: {e}")
-            await self.save_error("database", "BatteryReadingError", str(e))
+            # Fire-and-forget error logging to avoid blocking
+            if not self._in_error_handler:
+                asyncio.create_task(self.save_error("database", "BatteryReadingError", str(e)))
 
     async def save_recommendation(self, recommendation: Recommendation, vehicle_name: str):
         """
@@ -163,7 +167,9 @@ class Database:
 
         except Exception as e:
             logger.error(f"Failed to save recommendation: {e}")
-            await self.save_error("database", "RecommendationError", str(e))
+            # Fire-and-forget error logging to avoid blocking
+            if not self._in_error_handler:
+                asyncio.create_task(self.save_error("database", "RecommendationError", str(e)))
 
     async def save_error(self, service: str, error_type: str, message: str):
         """
@@ -174,10 +180,16 @@ class Database:
             error_type: Type of error
             message: Error message
         """
+        # Prevent recursive error handling
+        if self._in_error_handler:
+            logger.warning(f"Skipping recursive error save: {service} - {error_type}")
+            return
+
         try:
+            self._in_error_handler = True
             async with self.get_session() as session:
                 error = ErrorLog(
-                    timestamp=datetime.now(),
+                    timestamp=datetime.now(timezone.utc),
                     service=service,
                     error_type=error_type,
                     message=message
@@ -189,6 +201,8 @@ class Database:
         except Exception as e:
             # Don't recurse - just log to console
             logger.error(f"Failed to save error to database: {e}")
+        finally:
+            self._in_error_handler = False
 
     async def get_history(self, vehicle: Optional[str] = None, hours: int = 24) -> List[Dict[str, Any]]:
         """
@@ -203,7 +217,7 @@ class Database:
         """
         try:
             async with self.get_session() as session:
-                since = datetime.now() - timedelta(hours=hours)
+                since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
                 stmt = select(BatteryReading).where(BatteryReading.timestamp >= since)
                 if vehicle:
@@ -278,7 +292,7 @@ class Database:
         """
         try:
             async with self.get_session() as session:
-                cutoff = datetime.now() - timedelta(days=days)
+                cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
                 # Delete old battery readings
                 await session.execute(

@@ -3,14 +3,30 @@ Dashboard API routes
 """
 
 from datetime import datetime
-from fastapi import APIRouter, Request, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Request, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field, field_validator
 
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+# Pydantic models for request validation
+class ThresholdUpdate(BaseModel):
+    """Model for threshold update request"""
+    threshold: float = Field(..., ge=0, le=100, description="Charge threshold percentage (0-100)")
+
+    @field_validator('threshold')
+    @classmethod
+    def validate_threshold(cls, v):
+        """Ensure threshold is a reasonable value"""
+        if v < 0 or v > 100:
+            raise ValueError('Threshold must be between 0 and 100')
+        return round(v, 1)  # Round to 1 decimal place
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -82,13 +98,16 @@ async def trigger_update():
 
 
 @router.get("/api/history")
-async def get_history(hours: int = 24, vehicle: str = None):
+async def get_history(
+    hours: int = Query(default=24, ge=1, le=720, description="Number of hours of history (1-720)"),
+    vehicle: Optional[str] = Query(default=None, max_length=100, description="Filter by vehicle name")
+):
     """
     Get battery reading history
 
     Args:
-        hours: Number of hours of history (default: 24)
-        vehicle: Filter by vehicle name (optional)
+        hours: Number of hours of history (1-720, default: 24)
+        vehicle: Filter by vehicle name (optional, max 100 chars)
 
     Returns:
         List of battery readings
@@ -143,12 +162,12 @@ async def get_settings():
 
 
 @router.put("/api/settings/threshold")
-async def update_threshold(threshold: float):
+async def update_threshold(update: ThresholdUpdate):
     """
     Update charge threshold
 
     Args:
-        threshold: New threshold percentage (0-100)
+        update: Threshold update request with validated threshold (0-100)
 
     Returns:
         Updated settings
@@ -156,12 +175,12 @@ async def update_threshold(threshold: float):
     from api.app import decision_engine
 
     try:
-        decision_engine.update_threshold(threshold)
+        decision_engine.update_threshold(update.threshold)
 
         return {
             "status": "success",
             "charge_threshold": decision_engine.charge_threshold,
-            "message": f"Threshold updated to {threshold}%"
+            "message": f"Threshold updated to {update.threshold}%"
         }
 
     except ValueError as e:

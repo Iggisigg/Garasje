@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # Tesla Fleet API Configuration
     tesla_client_id: str = ""
     tesla_client_secret: str = ""
+    tesla_region: str = "EU"  # EU or NA (North America)
 
     # Legacy (for fallback/reference)
     tesla_email: str = ""

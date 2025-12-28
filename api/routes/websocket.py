@@ -3,7 +3,7 @@ WebSocket routes for real-time updates
 """
 
 from typing import List
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketState
 import json
 
 from utils.logger import get_logger
@@ -39,6 +39,14 @@ class ConnectionManager:
         """
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+
+            # Try to close the connection gracefully
+            try:
+                if websocket.client_state != WebSocketState.DISCONNECTED:
+                    await websocket.close()
+            except Exception as e:
+                logger.debug(f"Error closing WebSocket (already closed): {e}")
+
             logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
@@ -56,16 +64,30 @@ class ConnectionManager:
 
         # Send to all connections
         disconnected = []
+        success_count = 0
         for connection in self.active_connections:
             try:
-                await connection.send_json(message)
+                # Check connection state before sending
+                if connection.client_state == WebSocketState.CONNECTED:
+                    await connection.send_json(message)
+                    success_count += 1
+                else:
+                    logger.debug(f"Skipping disconnected client (state: {connection.client_state})")
+                    disconnected.append(connection)
+            except WebSocketDisconnect:
+                logger.debug("Client disconnected during broadcast")
+                disconnected.append(connection)
             except Exception as e:
-                logger.warning(f"Failed to send to connection: {e}")
+                logger.warning(f"Failed to send to connection: {type(e).__name__}: {e}")
                 disconnected.append(connection)
 
         # Clean up disconnected clients
-        for connection in disconnected:
-            await self.disconnect(connection)
+        if disconnected:
+            logger.info(f"Cleaning up {len(disconnected)} disconnected clients")
+            for connection in disconnected:
+                await self.disconnect(connection)
+
+        logger.debug(f"Broadcast complete: {success_count} successful, {len(disconnected)} failed")
 
     async def send_personal_message(self, message: dict, websocket: WebSocket):
         """

@@ -60,12 +60,12 @@ def register_account(access_token: str):
     }
 
     # POST to partner_accounts endpoint
-    # Using Vercel deployment URL
+    # Using GitHub Pages URL
     response = httpx.post(
         f"{API_URL}/api/1/partner_accounts",
         headers=headers,
         json={
-            'domain': 'garasje-mkb64nc26-sigurds-projects-577df441.vercel.app'
+            'domain': 'iggisigg.github.io'
         },
         timeout=30.0
     )

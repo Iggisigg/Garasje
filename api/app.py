@@ -59,7 +59,8 @@ async def lifespan(app: FastAPI):
         client_id=config.tesla_client_id,
         client_secret=config.tesla_client_secret,
         cache_file=config.tesla_cache_file,
-        mock_mode=config.mock_mode
+        mock_mode=config.mock_mode,
+        region=config.tesla_region
     )
 
     # Authenticate if not in mock mode
@@ -90,7 +91,13 @@ async def lifespan(app: FastAPI):
         update_interval_minutes=config.update_interval_minutes,
         websocket_broadcast=websocket_manager.broadcast
     )
-    scheduler.start()
+
+    try:
+        scheduler.start()
+    except Exception as e:
+        logger.error(f"Scheduler startup failed: {e}")
+        logger.warning("Application will continue, but automatic updates are disabled")
+        # Continue startup even if scheduler fails - manual updates will still work
 
     logger.info("✓ Charging Manager started successfully")
     logger.info(f"Dashboard available at: http://{config.host}:{config.port}")
@@ -121,12 +128,17 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware (allow local network access)
+# CORS middleware - secure configuration
+allowed_origins = ["*"] if config.mock_mode else [
+    f"http://localhost:{config.port}",
+    f"http://127.0.0.1:{config.port}",
+    f"http://0.0.0.0:{config.port}"
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify allowed origins
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 

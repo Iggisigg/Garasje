@@ -28,7 +28,21 @@ class VehicleStatus:
         data['last_updated'] = self.last_updated.isoformat()
         if self.estimated_full_time:
             data['estimated_full_time'] = self.estimated_full_time.isoformat()
+        # Add staleness indicators
+        data['is_stale'] = self.is_stale
+        data['data_age_minutes'] = self.data_age_minutes
         return data
+
+    @property
+    def data_age_minutes(self) -> float:
+        """Get age of data in minutes"""
+        age = datetime.now() - self.last_updated
+        return age.total_seconds() / 60.0
+
+    @property
+    def is_stale(self) -> bool:
+        """Check if data is stale (older than 10 minutes)"""
+        return self.data_age_minutes > 10.0
 
     @property
     def is_home(self) -> bool:

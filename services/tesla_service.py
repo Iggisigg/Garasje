@@ -4,6 +4,7 @@ Tesla Fleet API service with mock mode support
 Fleet API documentation: https://developer.tesla.com/docs/fleet-api
 """
 
+import asyncio
 import math
 import time
 import json
@@ -30,14 +31,18 @@ class TeslaFleetService(BaseVehicleService):
 
     # Fleet API endpoints
     AUTH_URL = "https://auth.tesla.com/oauth2/v3"
-    API_URL = "https://fleet-api.prd.eu.vn.cloud.tesla.com"  # EU region
+    REGION_ENDPOINTS = {
+        "EU": "https://fleet-api.prd.eu.vn.cloud.tesla.com",
+        "NA": "https://fleet-api.prd.na.vn.cloud.tesla.com"
+    }
 
     def __init__(
         self,
         client_id: str,
         client_secret: str,
         cache_file: str = "data/tesla_cache.json",
-        mock_mode: bool = False
+        mock_mode: bool = False,
+        region: str = "EU"
     ):
         """
         Initialize Tesla Fleet API service
@@ -47,11 +52,21 @@ class TeslaFleetService(BaseVehicleService):
             client_secret: Tesla Developer App Client Secret
             cache_file: Path to token cache file
             mock_mode: Use mock data instead of real API
+            region: Tesla API region (EU or NA)
         """
         super().__init__("Tesla Model Y", mock_mode)
         self.client_id = client_id
         self.client_secret = client_secret
         self.cache_file = Path(cache_file)
+        self.region = region.upper()
+
+        # Set API URL based on region
+        if self.region not in self.REGION_ENDPOINTS:
+            self.logger.warning(f"Unknown region '{region}', defaulting to EU")
+            self.region = "EU"
+        self.api_url = self.REGION_ENDPOINTS[self.region]
+        self.logger.info(f"Using Tesla Fleet API region: {self.region} ({self.api_url})")
+
         self.access_token: Optional[str] = None
         self.refresh_token: Optional[str] = None
         self.token_expires_at: Optional[datetime] = None
@@ -59,6 +74,12 @@ class TeslaFleetService(BaseVehicleService):
         self.last_fetch_time: Optional[datetime] = None
         self.cached_status: Optional[VehicleStatus] = None
         self.cache_duration_seconds = 300  # 5 minutes
+
+        # HTTP client for API requests
+        self._http_client = httpx.AsyncClient(timeout=30.0)
+
+        # Lock to prevent concurrent token refresh
+        self._token_refresh_lock = asyncio.Lock()
 
         # Load cached tokens if available
         self._load_tokens()
@@ -128,13 +149,20 @@ class TeslaFleetService(BaseVehicleService):
             self.logger.debug("Token still valid")
             return
 
-        # Try to refresh token
+        # Try to refresh token with lock to prevent concurrent refreshes
         if self.refresh_token:
-            try:
-                await self._refresh_access_token()
-                return
-            except Exception as e:
-                self.logger.warning(f"Token refresh failed: {e}")
+            async with self._token_refresh_lock:
+                # Double-check token validity after acquiring lock
+                # (another task might have refreshed it while we were waiting)
+                if self._is_token_valid():
+                    self.logger.debug("Token was refreshed by another task")
+                    return
+
+                try:
+                    await self._refresh_access_token()
+                    return
+                except Exception as e:
+                    self.logger.warning(f"Token refresh failed: {e}")
 
         # No valid tokens - need to run setup script
         raise TeslaAuthenticationError(
@@ -151,28 +179,27 @@ class TeslaFleetService(BaseVehicleService):
             'refresh_token': self.refresh_token
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.AUTH_URL}/token",
-                data=data,
-                headers={'Content-Type': 'application/x-www-form-urlencoded'}
+        response = await self._http_client.post(
+            f"{self.AUTH_URL}/token",
+            data=data,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'}
+        )
+
+        if response.status_code != 200:
+            raise TeslaAuthenticationError(
+                f"Token refresh failed: {response.status_code} - {response.text}"
             )
 
-            if response.status_code != 200:
-                raise TeslaAuthenticationError(
-                    f"Token refresh failed: {response.status_code} - {response.text}"
-                )
+        token_data = response.json()
+        self.access_token = token_data['access_token']
+        self.refresh_token = token_data.get('refresh_token', self.refresh_token)
 
-            token_data = response.json()
-            self.access_token = token_data['access_token']
-            self.refresh_token = token_data.get('refresh_token', self.refresh_token)
+        # Calculate expiration
+        expires_in = token_data.get('expires_in', 3600)
+        self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-            # Calculate expiration
-            expires_in = token_data.get('expires_in', 3600)
-            self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
-
-            self._save_tokens()
-            self.logger.info("✓ Access token refreshed")
+        self._save_tokens()
+        self.logger.info("✓ Access token refreshed")
 
     async def get_vehicle_status(self) -> VehicleStatus:
         """
@@ -236,53 +263,51 @@ class TeslaFleetService(BaseVehicleService):
             'Content-Type': 'application/json'
         }
 
-        async with httpx.AsyncClient() as client:
-            # Get vehicle data
-            response = await client.get(
-                f"{self.API_URL}/api/1/vehicles/{self.vehicle_id}/vehicle_data",
-                headers=headers,
-                timeout=30.0
+        # Get vehicle data
+        response = await self._http_client.get(
+            f"{self.api_url}/api/1/vehicles/{self.vehicle_id}/vehicle_data",
+            headers=headers
+        )
+
+        if response.status_code == 408:
+            # Vehicle is asleep
+            self.logger.warning("Vehicle is asleep")
+            # Return last known data or mock data
+            if self.cached_status:
+                return self.cached_status
+            raise TeslaAPIError("Vehicle is asleep and no cached data available")
+
+        if response.status_code != 200:
+            raise TeslaAPIError(
+                f"Fleet API error: {response.status_code} - {response.text}"
             )
 
-            if response.status_code == 408:
-                # Vehicle is asleep
-                self.logger.warning("Vehicle is asleep")
-                # Return last known data or mock data
-                if self.cached_status:
-                    return self.cached_status
-                raise TeslaAPIError("Vehicle is asleep and no cached data available")
+        data = response.json()['response']
 
-            if response.status_code != 200:
-                raise TeslaAPIError(
-                    f"Fleet API error: {response.status_code} - {response.text}"
-                )
+        # Extract charge state
+        charge_state = data.get('charge_state', {})
+        battery_level = charge_state.get('battery_level', 0)
+        battery_range = charge_state.get('battery_range', 0)
+        charging_state = charge_state.get('charging_state', 'Disconnected')
+        is_charging = charging_state in ['Charging', 'Starting']
+        charger_power = charge_state.get('charger_power', 0)
 
-            data = response.json()['response']
+        # Convert miles to km
+        range_km = battery_range * 1.60934
 
-            # Extract charge state
-            charge_state = data.get('charge_state', {})
-            battery_level = charge_state.get('battery_level', 0)
-            battery_range = charge_state.get('battery_range', 0)
-            charging_state = charge_state.get('charging_state', 'Disconnected')
-            is_charging = charging_state in ['Charging', 'Starting']
-            charger_power = charge_state.get('charger_power', 0)
+        # Determine location (simplified)
+        location = "home"  # Could implement geofencing
 
-            # Convert miles to km
-            range_km = battery_range * 1.60934
-
-            # Determine location (simplified)
-            location = "home"  # Could implement geofencing
-
-            return VehicleStatus(
-                vehicle_name=data.get('display_name', 'Tesla Model Y'),
-                battery_percent=float(battery_level),
-                range_km=range_km,
-                is_charging=is_charging,
-                location=location,
-                last_updated=datetime.now(),
-                is_mock=False,
-                charging_rate_kw=charger_power if is_charging else None
-            )
+        return VehicleStatus(
+            vehicle_name=data.get('display_name', 'Tesla Model Y'),
+            battery_percent=float(battery_level),
+            range_km=range_km,
+            is_charging=is_charging,
+            location=location,
+            last_updated=datetime.now(),
+            is_mock=False,
+            charging_rate_kw=charger_power if is_charging else None
+        )
 
     async def _get_vehicle_id(self):
         """Get vehicle ID from Fleet API"""
@@ -293,30 +318,28 @@ class TeslaFleetService(BaseVehicleService):
             'Content-Type': 'application/json'
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.API_URL}/api/1/vehicles",
-                headers=headers,
-                timeout=30.0
+        response = await self._http_client.get(
+            f"{self.api_url}/api/1/vehicles",
+            headers=headers
+        )
+
+        if response.status_code != 200:
+            raise TeslaAPIError(
+                f"Failed to get vehicles: {response.status_code} - {response.text}"
             )
 
-            if response.status_code != 200:
-                raise TeslaAPIError(
-                    f"Failed to get vehicles: {response.status_code} - {response.text}"
-                )
+        data = response.json()
+        vehicles = data.get('response', [])
 
-            data = response.json()
-            vehicles = data.get('response', [])
+        if not vehicles:
+            raise TeslaAPIError("No vehicles found in account")
 
-            if not vehicles:
-                raise TeslaAPIError("No vehicles found in account")
+        # Use first vehicle
+        self.vehicle_id = str(vehicles[0]['id'])
+        self.logger.info(f"✓ Found vehicle: {vehicles[0].get('display_name')} (ID: {self.vehicle_id})")
 
-            # Use first vehicle
-            self.vehicle_id = str(vehicles[0]['id'])
-            self.logger.info(f"✓ Found vehicle: {vehicles[0].get('display_name')} (ID: {self.vehicle_id})")
-
-            # Save vehicle ID to cache
-            self._save_tokens()
+        # Save vehicle ID to cache
+        self._save_tokens()
 
     def _get_mock_data(self) -> VehicleStatus:
         """
@@ -351,7 +374,8 @@ class TeslaFleetService(BaseVehicleService):
         )
 
     async def close(self):
-        """Close Tesla connection"""
+        """Close Tesla connection and HTTP client"""
+        await self._http_client.aclose()
         self.logger.info("Tesla Fleet service closed")
 
 
