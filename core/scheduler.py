@@ -11,6 +11,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
 from services.tesla_service import TeslaService
+from services.ioniq_service import IoniqService
 from core.decision_engine import DecisionEngine
 from core.database import Database
 from utils.logger import get_logger
@@ -28,7 +29,8 @@ class ChargingScheduler:
         decision_engine: DecisionEngine,
         database: Database,
         update_interval_minutes: int = 60,
-        websocket_broadcast: Optional[Callable] = None
+        websocket_broadcast: Optional[Callable] = None,
+        ioniq_service: Optional[IoniqService] = None
     ):
         """
         Initialize scheduler
@@ -39,8 +41,10 @@ class ChargingScheduler:
             database: Database instance
             update_interval_minutes: How often to update vehicle data
             websocket_broadcast: Optional function to broadcast updates via WebSocket
+            ioniq_service: Ioniq service instance (optional)
         """
         self.tesla_service = tesla_service
+        self.ioniq_service = ioniq_service
         self.decision_engine = decision_engine
         self.database = database
         self.update_interval_minutes = update_interval_minutes
@@ -52,7 +56,7 @@ class ChargingScheduler:
 
     async def update_vehicle_data(self):
         """
-        Update vehicle data and calculate recommendation
+        Update vehicle data and calculate recommendations
 
         This is the main scheduled task that runs periodically
         """
@@ -64,25 +68,55 @@ class ChargingScheduler:
             tesla_status = await self.tesla_service.get_vehicle_status()
             self.logger.info(f"Tesla: {tesla_status}")
 
-            # Save to database
+            # Save Tesla to database
             await self.database.save_battery_reading(tesla_status)
 
-            # Calculate recommendation
-            self.logger.debug("Calculating recommendation...")
-            recommendation = await self.decision_engine.calculate_recommendation(tesla_status)
-            self.logger.info(f"Recommendation: {recommendation}")
+            # Fetch Ioniq data (if enabled)
+            ioniq_status = None
+            if self.ioniq_service:
+                self.logger.debug("Fetching Ioniq status...")
+                ioniq_status = await self.ioniq_service.get_vehicle_status()
+                self.logger.info(f"Ioniq: {ioniq_status}")
 
-            # Save recommendation
-            await self.database.save_recommendation(recommendation, tesla_status.vehicle_name)
+                # Save Ioniq to database
+                await self.database.save_battery_reading(ioniq_status)
+
+            # Calculate recommendations for both vehicles
+            self.logger.debug("Calculating recommendations...")
+            recommendations = await self.decision_engine.calculate_dual_recommendations(
+                tesla_status,
+                ioniq_status
+            )
+
+            # Save Tesla recommendation
+            await self.database.save_recommendation(
+                recommendations['tesla'],
+                tesla_status.vehicle_name
+            )
+
+            # Save Ioniq recommendation if it exists
+            if recommendations['ioniq']:
+                await self.database.save_recommendation(
+                    recommendations['ioniq'],
+                    ioniq_status.vehicle_name
+                )
 
             # Broadcast update via WebSocket if available
             if self.websocket_broadcast:
-                await self.websocket_broadcast({
+                broadcast_data = {
                     "type": "status_update",
                     "timestamp": datetime.now().isoformat(),
                     "tesla": tesla_status.to_dict(),
-                    "recommendation": recommendation.to_dict()
-                })
+                    "tesla_recommendation": recommendations['tesla'].to_dict(),
+                    "priority_vehicle": recommendations['priority_vehicle']
+                }
+
+                # Add Ioniq data if available
+                if ioniq_status and recommendations['ioniq']:
+                    broadcast_data['ioniq'] = ioniq_status.to_dict()
+                    broadcast_data['ioniq_recommendation'] = recommendations['ioniq'].to_dict()
+
+                await self.websocket_broadcast(broadcast_data)
 
             self.logger.info("✓ Scheduled update completed successfully")
 

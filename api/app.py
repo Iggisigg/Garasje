@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from config import config
 from services.tesla_service import TeslaService
+from services.ioniq_service import IoniqService
 from core.decision_engine import DecisionEngine
 from core.database import Database
 from core.scheduler import ChargingScheduler
@@ -22,6 +23,7 @@ logger = setup_logger(log_level=config.log_level)
 
 # Global instances (will be initialized in lifespan)
 tesla_service: TeslaService = None
+ioniq_service: IoniqService = None
 decision_engine: DecisionEngine = None
 database: Database = None
 scheduler: ChargingScheduler = None
@@ -40,7 +42,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Charging Manager")
     logger.info("=" * 60)
 
-    global tesla_service, decision_engine, database, scheduler, templates
+    global tesla_service, ioniq_service, decision_engine, database, scheduler, templates
 
     # Ensure directories exist
     config.ensure_directories()
@@ -54,23 +56,35 @@ async def lifespan(app: FastAPI):
     await database.initialize()
 
     # Initialize Tesla service
-    logger.info(f"Initializing Tesla Fleet API service (mock_mode={config.mock_mode})...")
+    logger.info(f"Initializing Tesla Fleet API service (mock_mode={config.tesla_mock_mode})...")
     tesla_service = TeslaService(
         client_id=config.tesla_client_id,
         client_secret=config.tesla_client_secret,
         cache_file=config.tesla_cache_file,
-        mock_mode=config.mock_mode,
+        mock_mode=config.tesla_mock_mode,
         region=config.tesla_region
     )
 
     # Authenticate if not in mock mode
-    if not config.mock_mode:
+    if not config.tesla_mock_mode:
         try:
             await tesla_service.authenticate()
         except Exception as e:
             logger.error(f"Tesla authentication failed: {e}")
             logger.warning("Continuing in mock mode")
             tesla_service.mock_mode = True
+
+    # Initialize Ioniq 5 service (if enabled)
+    if config.ioniq_enabled:
+        logger.info(f"Initializing Ioniq 5 service (mock_mode={config.ioniq_mock_mode})...")
+        ioniq_service = IoniqService(
+            mock_mode=config.ioniq_mock_mode,
+            obd_adapter_address=config.ioniq_obd_address if config.ioniq_obd_address else None
+        )
+        logger.info("✓ Ioniq 5 service initialized")
+    else:
+        logger.info("Ioniq 5 monitoring disabled")
+        ioniq_service = None
 
     # Initialize decision engine
     logger.info("Initializing decision engine...")
@@ -89,7 +103,8 @@ async def lifespan(app: FastAPI):
         decision_engine=decision_engine,
         database=database,
         update_interval_minutes=config.update_interval_minutes,
-        websocket_broadcast=websocket_manager.broadcast
+        websocket_broadcast=websocket_manager.broadcast,
+        ioniq_service=ioniq_service
     )
 
     try:
@@ -114,6 +129,9 @@ async def lifespan(app: FastAPI):
     if tesla_service:
         await tesla_service.close()
 
+    if ioniq_service:
+        await ioniq_service.close()
+
     if database:
         await database.close()
 
@@ -129,7 +147,8 @@ app = FastAPI(
 )
 
 # CORS middleware - secure configuration
-allowed_origins = ["*"] if config.mock_mode else [
+# Allow all origins if ANY vehicle is in mock mode (for development)
+allowed_origins = ["*"] if (config.tesla_mock_mode or config.ioniq_mock_mode) else [
     f"http://localhost:{config.port}",
     f"http://127.0.0.1:{config.port}",
     f"http://0.0.0.0:{config.port}"
@@ -160,6 +179,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "mock_mode": config.mock_mode,
+        "tesla_mock_mode": config.tesla_mock_mode,
+        "ioniq_mock_mode": config.ioniq_mock_mode,
         "scheduler_running": scheduler.is_running if scheduler else False
     }

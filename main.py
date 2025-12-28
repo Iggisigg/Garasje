@@ -105,7 +105,8 @@ def main():
 
     # Display configuration
     print("Configuration:")
-    print(f"  Mock Mode: {config.mock_mode}")
+    print(f"  Tesla Mock Mode: {config.tesla_mock_mode}")
+    print(f"  Ioniq Mock Mode: {config.ioniq_mock_mode}")
     print(f"  Host: {config.host}")
     print(f"  Port: {config.port}")
     print(f"  Update Interval: {config.update_interval_minutes} min")
@@ -114,11 +115,16 @@ def main():
     print(f"  Log Level: {config.log_level}")
     print()
 
-    if config.mock_mode:
-        print("⚠️  Running in MOCK MODE - using simulated Tesla data")
+    if config.tesla_mock_mode:
+        print("⚠️  Tesla running in MOCK MODE - using simulated data")
         print("   To use real Tesla API:")
         print("   1. Run: python scripts/setup_tesla.py")
-        print("   2. Set MOCK_MODE=false in .env")
+        print("   2. Set TESLA_MOCK_MODE=false in .env")
+    if config.ioniq_mock_mode:
+        print("⚠️  Ioniq running in MOCK MODE - using simulated data")
+        print("   To use real OBD-II data:")
+        print("   1. Connect OBD-II adapter")
+        print("   2. Set IONIQ_MOCK_MODE=false in .env")
         print()
 
     print("Starting server...")

@@ -22,6 +22,7 @@ from services.base_service import BaseVehicleService
 from models.vehicle import VehicleStatus
 from utils.exceptions import TeslaAPIError, TeslaAuthenticationError
 from utils.logger import get_logger
+from utils.geocoding import reverse_geocode
 
 logger = get_logger(__name__)
 
@@ -263,10 +264,13 @@ class TeslaFleetService(BaseVehicleService):
             'Content-Type': 'application/json'
         }
 
-        # Get vehicle data
+        # Get vehicle data - explicitly request charge_state and drive_state
         response = await self._http_client.get(
             f"{self.api_url}/api/1/vehicles/{self.vehicle_id}/vehicle_data",
-            headers=headers
+            headers=headers,
+            params={
+                'endpoints': 'charge_state;drive_state;location_data;vehicle_state'
+            }
         )
 
         if response.status_code == 408:
@@ -295,8 +299,30 @@ class TeslaFleetService(BaseVehicleService):
         # Convert miles to km
         range_km = battery_range * 1.60934
 
-        # Determine location (simplified)
-        location = "home"  # Could implement geofencing
+        # Extract GPS location
+        drive_state = data.get('drive_state', {})
+        latitude = drive_state.get('latitude')
+        longitude = drive_state.get('longitude')
+
+        self.logger.debug(f"GPS coordinates from API: lat={latitude}, lon={longitude}")
+
+        # Reverse geocode to get address
+        address = None
+        if latitude is not None and longitude is not None:
+            try:
+                self.logger.info(f"Reverse geocoding position: {latitude}, {longitude}")
+                address = await reverse_geocode(latitude, longitude)
+                if address:
+                    self.logger.info(f"✓ Geocoded address: {address}")
+                else:
+                    self.logger.warning("Geocoding returned no address")
+            except Exception as e:
+                self.logger.error(f"Failed to geocode location: {e}", exc_info=True)
+        else:
+            self.logger.warning("No GPS coordinates available from Tesla API")
+
+        # Determine location (simplified - could use geofencing with home coordinates)
+        location = "home"  # TODO: Implement proper geofencing
 
         return VehicleStatus(
             vehicle_name=data.get('display_name', 'Tesla Model Y'),
@@ -306,7 +332,10 @@ class TeslaFleetService(BaseVehicleService):
             location=location,
             last_updated=datetime.now(),
             is_mock=False,
-            charging_rate_kw=charger_power if is_charging else None
+            charging_rate_kw=charger_power if is_charging else None,
+            latitude=latitude,
+            longitude=longitude,
+            address=address
         )
 
     async def _get_vehicle_id(self):
@@ -362,6 +391,10 @@ class TeslaFleetService(BaseVehicleService):
 
         self.logger.debug(f"Mock data: {battery:.1f}% ({range_km:.0f} km)")
 
+        # Mock GPS coordinates (Oslo, Norway city center)
+        mock_latitude = 59.9139
+        mock_longitude = 10.7522
+
         return VehicleStatus(
             vehicle_name="Tesla Model Y",
             battery_percent=round(battery, 1),
@@ -370,7 +403,10 @@ class TeslaFleetService(BaseVehicleService):
             location="home",
             last_updated=datetime.now(),
             is_mock=True,
-            charging_rate_kw=11.0 if is_charging else None
+            charging_rate_kw=11.0 if is_charging else None,
+            latitude=mock_latitude,
+            longitude=mock_longitude,
+            address="Mock adresse - Oslo sentrum"
         )
 
     async def close(self):

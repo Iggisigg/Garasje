@@ -3,7 +3,7 @@ Decision engine for charging recommendations
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple, Dict
 
 from models.vehicle import VehicleStatus
 from models.recommendation import Recommendation, ChargeAction
@@ -102,6 +102,46 @@ class DecisionEngine:
                 priority_score=priority
             )
 
+    async def calculate_dual_recommendations(
+        self,
+        tesla_status: VehicleStatus,
+        ioniq_status: Optional[VehicleStatus] = None
+    ) -> Dict[str, Recommendation]:
+        """
+        Calculate charging recommendations for both vehicles
+
+        Args:
+            tesla_status: Tesla status
+            ioniq_status: Ioniq status (optional, None if disabled)
+
+        Returns:
+            Dictionary with 'tesla' and 'ioniq' recommendations
+            Also includes 'priority_vehicle' indicating which should charge first
+        """
+        recommendations = {}
+
+        # Get Tesla recommendation
+        tesla_rec = await self.calculate_recommendation(tesla_status)
+        recommendations['tesla'] = tesla_rec
+
+        # Get Ioniq recommendation if enabled
+        if ioniq_status:
+            ioniq_rec = await self.calculate_recommendation(ioniq_status)
+            recommendations['ioniq'] = ioniq_rec
+
+            # Determine priority vehicle
+            priority = await self.compare_vehicles(tesla_status, ioniq_status)
+            recommendations['priority_vehicle'] = priority
+
+            self.logger.info(f"Dual vehicle recommendations: Tesla={tesla_rec.action.value}, Ioniq={ioniq_rec.action.value}, Priority={priority}")
+        else:
+            recommendations['ioniq'] = None
+            recommendations['priority_vehicle'] = tesla_status.vehicle_name if tesla_rec.action == ChargeAction.CHARGE else "NONE"
+
+            self.logger.info(f"Single vehicle recommendation: Tesla={tesla_rec.action.value}")
+
+        return recommendations
+
     async def compare_vehicles(
         self,
         vehicle_a: VehicleStatus,
@@ -111,35 +151,55 @@ class DecisionEngine:
         Compare two vehicles and recommend which should charge
 
         Args:
-            vehicle_a: First vehicle status
-            vehicle_b: Second vehicle status
+            vehicle_a: First vehicle status (Tesla)
+            vehicle_b: Second vehicle status (Ioniq)
 
         Returns:
             Name of vehicle that should charge, or "NONE" if neither needs charging
-
-        Note: This is for future use when Ioniq 5 is added
         """
 
         # Get recommendations for both
         rec_a = await self.calculate_recommendation(vehicle_a)
         rec_b = await self.calculate_recommendation(vehicle_b)
 
+        self.logger.debug(f"Comparing vehicles:")
+        self.logger.debug(f"  {vehicle_a.vehicle_name}: {vehicle_a.battery_percent}% → priority_score={rec_a.priority_score}, action={rec_a.action.value}")
+        self.logger.debug(f"  {vehicle_b.vehicle_name}: {vehicle_b.battery_percent}% → priority_score={rec_b.priority_score}, action={rec_b.action.value}")
+
+        # Helper function to check if a vehicle needs charging (CHARGE or CONTINUE_CHARGING)
+        def needs_charging(action: ChargeAction) -> bool:
+            return action in (ChargeAction.CHARGE, ChargeAction.CONTINUE_CHARGING)
+
         # If neither should charge
-        if rec_a.action == ChargeAction.NO_CHARGE and rec_b.action == ChargeAction.NO_CHARGE:
+        if not needs_charging(rec_a.action) and not needs_charging(rec_b.action):
+            self.logger.info("Neither vehicle needs charging")
             return "NONE"
 
-        # If only one should charge
-        if rec_a.action == ChargeAction.CHARGE and rec_b.action != ChargeAction.CHARGE:
+        # If only one needs charging
+        if needs_charging(rec_a.action) and not needs_charging(rec_b.action):
+            self.logger.info(f"Only {vehicle_a.vehicle_name} needs charging (action={rec_a.action.value})")
             return vehicle_a.vehicle_name
 
-        if rec_b.action == ChargeAction.CHARGE and rec_a.action != ChargeAction.CHARGE:
+        if needs_charging(rec_b.action) and not needs_charging(rec_a.action):
+            self.logger.info(f"Only {vehicle_b.vehicle_name} needs charging (action={rec_b.action.value})")
             return vehicle_b.vehicle_name
 
-        # If both should charge, prioritize by battery level (lower = higher priority)
+        # If both need charging, prioritize by battery level
+        # Lower battery = higher gap = higher priority_score = should charge first
         if rec_a.priority_score > rec_b.priority_score:
+            self.logger.info(f"Both need charging. Priority: {vehicle_a.vehicle_name} ({vehicle_a.battery_percent}% < {vehicle_b.battery_percent}%, priority_score={rec_a.priority_score})")
             return vehicle_a.vehicle_name
-        else:
+        elif rec_b.priority_score > rec_a.priority_score:
+            self.logger.info(f"Both need charging. Priority: {vehicle_b.vehicle_name} ({vehicle_b.battery_percent}% < {vehicle_a.battery_percent}%, priority_score={rec_b.priority_score})")
             return vehicle_b.vehicle_name
+        else:
+            # Equal priority - prefer the one with lower battery as tiebreaker
+            if vehicle_a.battery_percent < vehicle_b.battery_percent:
+                self.logger.info(f"Equal priority. Tiebreaker: {vehicle_a.vehicle_name} ({vehicle_a.battery_percent}% < {vehicle_b.battery_percent}%)")
+                return vehicle_a.vehicle_name
+            else:
+                self.logger.info(f"Equal priority. Tiebreaker: {vehicle_b.vehicle_name} ({vehicle_b.battery_percent}% <= {vehicle_a.battery_percent}%)")
+                return vehicle_b.vehicle_name
 
     def update_threshold(self, new_threshold: float):
         """

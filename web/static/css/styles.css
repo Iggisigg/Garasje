@@ -122,3 +122,85 @@ button:active {
         display: none;
     }
 }
+
+/* Toggle Switch Styles */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 52px;
+    height: 28px;
+    flex-shrink: 0;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #cbd5e1;
+    transition: 0.3s;
+    border-radius: 28px;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 22px;
+    width: 22px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: 0.3s;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Blue toggle (Tesla) */
+input:checked + .toggle-slider.toggle-blue {
+    background-color: #3b82f6;
+}
+
+input:focus + .toggle-slider.toggle-blue {
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+}
+
+/* Purple toggle (Ioniq) */
+input:checked + .toggle-slider.toggle-purple {
+    background-color: #a855f7;
+}
+
+input:focus + .toggle-slider.toggle-purple {
+    box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.3);
+}
+
+/* Slider movement */
+input:checked + .toggle-slider:before {
+    transform: translateX(24px);
+}
+
+/* Hover effects */
+.toggle-slider:hover {
+    background-color: #94a3b8;
+}
+
+input:checked + .toggle-slider.toggle-blue:hover {
+    background-color: #2563eb;
+}
+
+input:checked + .toggle-slider.toggle-purple:hover {
+    background-color: #9333ea;
+}
+
+/* Active state */
+.toggle-switch input:active + .toggle-slider:before {
+    width: 26px;
+}

@@ -20,6 +20,9 @@ class VehicleStatus:
     is_mock: bool = False
     charging_rate_kw: Optional[float] = None  # If charging, rate in kW
     estimated_full_time: Optional[datetime] = None  # If charging, when will it be full
+    latitude: Optional[float] = None  # GPS latitude
+    longitude: Optional[float] = None  # GPS longitude
+    address: Optional[str] = None  # Reverse geocoded address
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization"""

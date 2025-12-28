@@ -3,7 +3,8 @@ WebSocket routes for real-time updates
 """
 
 from typing import List
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketState
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 import json
 
 from utils.logger import get_logger
@@ -119,19 +120,39 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         # Send initial status immediately
-        from api.app import tesla_service, decision_engine
+        from api.app import tesla_service, ioniq_service, decision_engine
         from datetime import datetime
 
         try:
+            # Get Tesla status
             tesla_status = await tesla_service.get_vehicle_status()
-            recommendation = await decision_engine.calculate_recommendation(tesla_status)
 
-            await websocket_manager.send_personal_message({
+            # Get Ioniq status (if enabled)
+            ioniq_status = None
+            if ioniq_service:
+                ioniq_status = await ioniq_service.get_vehicle_status()
+
+            # Calculate recommendations
+            recommendations = await decision_engine.calculate_dual_recommendations(
+                tesla_status,
+                ioniq_status
+            )
+
+            # Build message
+            message = {
                 "type": "initial_status",
                 "timestamp": datetime.now().isoformat(),
                 "tesla": tesla_status.to_dict(),
-                "recommendation": recommendation.to_dict()
-            }, websocket)
+                "tesla_recommendation": recommendations['tesla'].to_dict(),
+                "priority_vehicle": recommendations['priority_vehicle']
+            }
+
+            # Add Ioniq data if available
+            if ioniq_status and recommendations['ioniq']:
+                message['ioniq'] = ioniq_status.to_dict()
+                message['ioniq_recommendation'] = recommendations['ioniq'].to_dict()
+
+            await websocket_manager.send_personal_message(message, websocket)
 
         except Exception as e:
             logger.error(f"Failed to send initial status: {e}")
@@ -156,14 +177,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif message.get("type") == "request_status":
                     # Client requesting current status
                     tesla_status = await tesla_service.get_vehicle_status()
-                    recommendation = await decision_engine.calculate_recommendation(tesla_status)
 
-                    await websocket_manager.send_personal_message({
+                    # Get Ioniq status (if enabled)
+                    ioniq_status = None
+                    if ioniq_service:
+                        ioniq_status = await ioniq_service.get_vehicle_status()
+
+                    # Calculate recommendations
+                    recommendations = await decision_engine.calculate_dual_recommendations(
+                        tesla_status,
+                        ioniq_status
+                    )
+
+                    # Build response
+                    response = {
                         "type": "status_update",
                         "timestamp": datetime.now().isoformat(),
                         "tesla": tesla_status.to_dict(),
-                        "recommendation": recommendation.to_dict()
-                    }, websocket)
+                        "tesla_recommendation": recommendations['tesla'].to_dict(),
+                        "priority_vehicle": recommendations['priority_vehicle']
+                    }
+
+                    # Add Ioniq data if available
+                    if ioniq_status and recommendations['ioniq']:
+                        response['ioniq'] = ioniq_status.to_dict()
+                        response['ioniq_recommendation'] = recommendations['ioniq'].to_dict()
+
+                    await websocket_manager.send_personal_message(response, websocket)
 
                 else:
                     logger.warning(f"Unknown message type: {message.get('type')}")

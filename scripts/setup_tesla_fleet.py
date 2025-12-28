@@ -49,7 +49,7 @@ def get_authorization_url(client_id: str, code_challenge: str, state: str) -> st
         'response_type': 'code',
         'client_id': client_id,
         'redirect_uri': REDIRECT_URI,
-        'scope': 'openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds',
+        'scope': 'openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds vehicle_location',
         'state': state,
         'code_challenge': code_challenge,
         'code_challenge_method': 'S256',

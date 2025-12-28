@@ -59,8 +59,13 @@ async function loadSettings() {
         slider.value = settings.charge_threshold;
         document.getElementById('threshold-value').textContent = settings.charge_threshold;
 
+        // Update mock mode checkboxes
+        document.getElementById('tesla-mock-checkbox').checked = settings.tesla_mock_mode;
+        document.getElementById('ioniq-mock-checkbox').checked = settings.ioniq_mock_mode;
+
         // Update display values
-        document.getElementById('mode').textContent = settings.mock_mode ? 'Mock' : 'Ekte';
+        document.getElementById('tesla-mode').textContent = settings.tesla_mock_mode ? 'Mock' : 'Ekte';
+        document.getElementById('ioniq-mode').textContent = settings.ioniq_mock_mode ? 'Mock' : 'Ekte';
 
     } catch (error) {
         console.error('Failed to load settings:', error);
@@ -75,12 +80,20 @@ function updateUI(data) {
 
     // Update Tesla data
     if (data.tesla) {
-        updateTeslaCard(data.tesla);
+        updateTeslaCard(data.tesla, data.tesla_recommendation);
     }
 
-    // Update recommendation
-    if (data.recommendation) {
-        updateRecommendation(data.recommendation);
+    // Update Ioniq data
+    if (data.ioniq) {
+        updateIoniqCard(data.ioniq, data.ioniq_recommendation);
+        document.getElementById('ioniq-card').classList.remove('hidden');
+    } else {
+        document.getElementById('ioniq-card').classList.add('hidden');
+    }
+
+    // Update priority vehicle
+    if (data.priority_vehicle) {
+        updatePriorityVehicle(data.priority_vehicle);
     }
 
     // Update timestamps
@@ -105,7 +118,7 @@ function updateUI(data) {
 /**
  * Update Tesla card
  */
-function updateTeslaCard(tesla) {
+function updateTeslaCard(tesla, recommendation) {
     // Battery percentage
     document.getElementById('tesla-battery').textContent = `${tesla.battery_percent}%`;
 
@@ -118,17 +131,22 @@ function updateTeslaCard(tesla) {
 
     // Update battery bar color based on percentage
     if (tesla.battery_percent >= 80) {
-        batteryBar.className = 'bg-green-500 h-3 rounded-full transition-all duration-500';
+        batteryBar.className = 'bg-green-500 h-2 rounded-full transition-all duration-500';
     } else if (tesla.battery_percent >= 50) {
-        batteryBar.className = 'bg-yellow-500 h-3 rounded-full transition-all duration-500';
+        batteryBar.className = 'bg-yellow-500 h-2 rounded-full transition-all duration-500';
     } else if (tesla.battery_percent >= 20) {
-        batteryBar.className = 'bg-orange-500 h-3 rounded-full transition-all duration-500';
+        batteryBar.className = 'bg-orange-500 h-2 rounded-full transition-all duration-500';
     } else {
-        batteryBar.className = 'bg-red-500 h-3 rounded-full transition-all duration-500';
+        batteryBar.className = 'bg-red-500 h-2 rounded-full transition-all duration-500';
     }
 
-    // Location
-    const locationText = tesla.location === 'home' ? 'Hjemme' : 'Borte';
+    // Location - show address instead of "Hjemme/Borte"
+    let locationText = 'Ukjent posisjon';
+    if (tesla.address) {
+        locationText = tesla.address;
+    } else if (tesla.latitude && tesla.longitude) {
+        locationText = `${tesla.latitude.toFixed(4)}°, ${tesla.longitude.toFixed(4)}°`;
+    }
     document.getElementById('tesla-location').textContent = locationText;
 
     // Charging status
@@ -137,8 +155,19 @@ function updateTeslaCard(tesla) {
         : 'Lader ikke';
     document.getElementById('tesla-charging').textContent = chargingText;
 
+    // Recommendation
+    if (recommendation) {
+        const actionMap = {
+            'CHARGE': 'LAD',
+            'NO_CHARGE': 'IKKE LAD',
+            'CONTINUE_CHARGING': 'FORTSETT'
+        };
+        document.getElementById('tesla-recommendation').textContent =
+            actionMap[recommendation.action] || recommendation.action;
+    }
+
     // Mock badge
-    const mockBadge = document.getElementById('mock-badge');
+    const mockBadge = document.getElementById('tesla-mock-badge');
     if (tesla.is_mock) {
         mockBadge.classList.remove('hidden');
     } else {
@@ -147,37 +176,76 @@ function updateTeslaCard(tesla) {
 }
 
 /**
- * Update recommendation card
+ * Update Ioniq card
  */
-function updateRecommendation(recommendation) {
-    const card = document.getElementById('recommendation-card');
-    const action = document.getElementById('recommendation-action');
-    const reason = document.getElementById('recommendation-reason');
+function updateIoniqCard(ioniq, recommendation) {
+    // Battery percentage
+    document.getElementById('ioniq-battery').textContent = `${ioniq.battery_percent}%`;
 
-    // Update text
-    const actionMap = {
-        'CHARGE': 'LAD',
-        'NO_CHARGE': 'IKKE LAD',
-        'CONTINUE_CHARGING': 'FORTSETT Å LADE'
-    };
+    // Range
+    document.getElementById('ioniq-range').textContent = `${Math.round(ioniq.range_km)} km`;
 
-    action.textContent = actionMap[recommendation.action] || recommendation.action;
-    reason.textContent = recommendation.reason;
+    // Battery bar
+    const batteryBar = document.getElementById('ioniq-battery-bar');
+    batteryBar.style.width = `${ioniq.battery_percent}%`;
 
-    // Update card styling based on action
-    card.className = 'rounded-lg shadow-md p-6 mb-6';
-
-    if (recommendation.action === 'CHARGE') {
-        card.classList.add('bg-blue-50', 'border', 'border-blue-200');
-        action.className = 'text-lg font-medium mb-2 text-blue-700';
-    } else if (recommendation.action === 'NO_CHARGE') {
-        card.classList.add('bg-green-50', 'border', 'border-green-200');
-        action.className = 'text-lg font-medium mb-2 text-green-700';
+    // Update battery bar color based on percentage
+    if (ioniq.battery_percent >= 80) {
+        batteryBar.className = 'bg-purple-500 h-2 rounded-full transition-all duration-500';
+    } else if (ioniq.battery_percent >= 50) {
+        batteryBar.className = 'bg-yellow-500 h-2 rounded-full transition-all duration-500';
+    } else if (ioniq.battery_percent >= 20) {
+        batteryBar.className = 'bg-orange-500 h-2 rounded-full transition-all duration-500';
     } else {
-        card.classList.add('bg-yellow-50', 'border', 'border-yellow-200');
-        action.className = 'text-lg font-medium mb-2 text-yellow-700';
+        batteryBar.className = 'bg-red-500 h-2 rounded-full transition-all duration-500';
+    }
+
+    // Location
+    const locationText = ioniq.location === 'home' ? 'Hjemme' : 'Borte';
+    document.getElementById('ioniq-location').textContent = locationText;
+
+    // Charging status
+    const chargingText = ioniq.is_charging
+        ? `Lader${ioniq.charging_rate_kw ? ` (${ioniq.charging_rate_kw} kW)` : ''}`
+        : 'Lader ikke';
+    document.getElementById('ioniq-charging').textContent = chargingText;
+
+    // Recommendation
+    if (recommendation) {
+        const actionMap = {
+            'CHARGE': 'LAD',
+            'NO_CHARGE': 'IKKE LAD',
+            'CONTINUE_CHARGING': 'FORTSETT'
+        };
+        document.getElementById('ioniq-recommendation').textContent =
+            actionMap[recommendation.action] || recommendation.action;
+    }
+
+    // Mock badge
+    const mockBadge = document.getElementById('ioniq-mock-badge');
+    if (ioniq.is_mock) {
+        mockBadge.classList.remove('hidden');
+    } else {
+        mockBadge.classList.add('hidden');
     }
 }
+
+/**
+ * Update priority vehicle display
+ */
+function updatePriorityVehicle(priorityVehicle) {
+    const element = document.getElementById('priority-vehicle');
+    const card = document.getElementById('recommendation-card');
+
+    if (priorityVehicle === 'NONE') {
+        element.textContent = 'Ingen bil trenger lading';
+        card.className = 'rounded-lg shadow-md p-6 mb-6 bg-green-50 border border-green-200';
+    } else {
+        element.textContent = priorityVehicle;
+        card.className = 'rounded-lg shadow-md p-6 mb-6 bg-blue-50 border border-blue-200';
+    }
+}
+
 
 /**
  * Setup event listeners
@@ -213,6 +281,15 @@ function setupEventListeners() {
 
     slider.addEventListener('change', async (e) => {
         await updateThreshold(parseInt(e.target.value));
+    });
+
+    // Mock mode checkboxes
+    document.getElementById('tesla-mock-checkbox').addEventListener('change', async (e) => {
+        await updateMockMode('tesla', e.target.checked);
+    });
+
+    document.getElementById('ioniq-mock-checkbox').addEventListener('change', async (e) => {
+        await updateMockMode('ioniq', e.target.checked);
     });
 }
 
@@ -293,6 +370,39 @@ async function updateThreshold(threshold) {
     } catch (error) {
         console.error('Failed to update threshold:', error);
         showError('Kunne ikke oppdatere terskel.');
+    }
+}
+
+/**
+ * Update mock mode for a vehicle
+ */
+async function updateMockMode(vehicle, enabled) {
+    try {
+        const response = await fetch(`/api/settings/mock-mode/${vehicle}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ enabled: enabled })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        console.log(`${vehicle} mock mode ${enabled ? 'enabled' : 'disabled'}`);
+
+        // Reload settings and dashboard
+        await loadSettings();
+        await loadDashboard();
+
+    } catch (error) {
+        console.error(`Failed to update ${vehicle} mock mode:`, error);
+        showError(`Kunne ikke oppdatere ${vehicle} mock mode.`);
+
+        // Revert checkbox on error
+        const checkbox = document.getElementById(`${vehicle}-mock-checkbox`);
+        checkbox.checked = !enabled;
     }
 }
 

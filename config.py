@@ -19,8 +19,13 @@ class Settings(BaseSettings):
     tesla_email: str = ""
     tesla_cache_file: str = "data/tesla_cache.json"
 
+    # Ioniq 5 Configuration
+    ioniq_enabled: bool = True  # Enable/disable Ioniq 5 monitoring
+    ioniq_mock_mode: bool = True  # Use mock data for Ioniq (independent from Tesla mock mode)
+    ioniq_obd_address: str = ""  # Bluetooth address of OBD-II adapter (future)
+
     # Application Configuration
-    mock_mode: bool = True  # Default to mock mode for development
+    tesla_mock_mode: bool = True  # Use mock data for Tesla (independent from Ioniq mock mode)
     update_interval_minutes: int = 60
     charge_threshold_percent: float = 80.0
     database_path: str = "data/charging_manager.db"

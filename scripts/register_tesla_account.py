@@ -30,7 +30,7 @@ def get_partner_token(client_id: str, client_secret: str) -> str:
         'grant_type': 'client_credentials',
         'client_id': client_id,
         'client_secret': client_secret,
-        'scope': 'openid vehicle_device_data vehicle_cmds vehicle_charging_cmds',
+        'scope': 'openid vehicle_device_data vehicle_cmds vehicle_charging_cmds vehicle_location',
         'audience': API_URL
     }
 

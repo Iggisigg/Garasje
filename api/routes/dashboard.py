@@ -29,6 +29,11 @@ class ThresholdUpdate(BaseModel):
         return round(v, 1)  # Round to 1 decimal place
 
 
+class MockModeUpdate(BaseModel):
+    """Model for mock mode update request"""
+    enabled: bool = Field(..., description="Enable or disable mock mode")
+
+
 @router.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
     """Serve the main dashboard HTML page"""
@@ -43,29 +48,49 @@ async def get_dashboard(request: Request):
 @router.get("/api/status")
 async def get_status():
     """
-    Get current status of all vehicles and recommendation
+    Get current status of all vehicles and recommendations
 
     Returns:
-        JSON with Tesla status and charging recommendation
+        JSON with Tesla and Ioniq status and charging recommendations
     """
-    from api.app import tesla_service, decision_engine, scheduler
+    from api.app import tesla_service, ioniq_service, decision_engine, scheduler
 
     try:
         # Get Tesla status
         tesla_status = await tesla_service.get_vehicle_status()
 
-        # Calculate recommendation
-        recommendation = await decision_engine.calculate_recommendation(tesla_status)
+        # Get Ioniq status (if enabled)
+        ioniq_status = None
+        if ioniq_service:
+            ioniq_status = await ioniq_service.get_vehicle_status()
+
+        # Calculate recommendations
+        recommendations = await decision_engine.calculate_dual_recommendations(
+            tesla_status,
+            ioniq_status
+        )
 
         # Get next scheduled update time
         next_update = scheduler.get_next_run_time()
 
-        return {
+        # Build response
+        response = {
             "tesla": tesla_status.to_dict(),
-            "recommendation": recommendation.to_dict(),
+            "tesla_recommendation": recommendations['tesla'].to_dict(),
+            "priority_vehicle": recommendations['priority_vehicle'],
             "last_updated": datetime.now().isoformat(),
             "next_update": next_update.isoformat() if next_update else None
         }
+
+        # Add Ioniq data if available
+        if ioniq_status and recommendations['ioniq']:
+            response['ioniq'] = ioniq_status.to_dict()
+            response['ioniq_recommendation'] = recommendations['ioniq'].to_dict()
+        else:
+            response['ioniq'] = None
+            response['ioniq_recommendation'] = None
+
+        return response
 
     except Exception as e:
         logger.error(f"Failed to get status: {e}")
@@ -157,7 +182,8 @@ async def get_settings():
         "charge_threshold": decision_engine.charge_threshold,
         "minimum_charge": decision_engine.minimum_charge,
         "update_interval_minutes": config.update_interval_minutes,
-        "mock_mode": config.mock_mode
+        "tesla_mock_mode": config.tesla_mock_mode,
+        "ioniq_mock_mode": config.ioniq_mock_mode
     }
 
 
@@ -187,4 +213,76 @@ async def update_threshold(update: ThresholdUpdate):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to update threshold: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/api/settings/mock-mode/{vehicle}")
+async def update_mock_mode(vehicle: str, update: MockModeUpdate):
+    """
+    Update mock mode for a specific vehicle
+
+    Args:
+        vehicle: Vehicle name ('tesla' or 'ioniq')
+        update: Mock mode update request with enabled flag
+
+    Returns:
+        Updated mock mode status
+    """
+    from api.app import tesla_service, ioniq_service
+    from config import config
+    from pathlib import Path
+
+    # Validate vehicle parameter
+    if vehicle not in ['tesla', 'ioniq']:
+        raise HTTPException(status_code=400, detail="Vehicle must be 'tesla' or 'ioniq'")
+
+    try:
+        # Update both the service and config objects
+        if vehicle == 'tesla':
+            if not tesla_service:
+                raise HTTPException(status_code=400, detail="Tesla service not initialized")
+            tesla_service.mock_mode = update.enabled
+            config.tesla_mock_mode = update.enabled  # Update config object
+            logger.info(f"Tesla mock mode {'enabled' if update.enabled else 'disabled'}")
+            env_key = 'TESLA_MOCK_MODE'
+        else:  # ioniq
+            if not ioniq_service:
+                raise HTTPException(status_code=400, detail="Ioniq service not initialized")
+            ioniq_service.mock_mode = update.enabled
+            config.ioniq_mock_mode = update.enabled  # Update config object
+            logger.info(f"Ioniq mock mode {'enabled' if update.enabled else 'disabled'}")
+            env_key = 'IONIQ_MOCK_MODE'
+
+        # Update .env file to persist the change across restarts
+        env_path = Path('.env')
+        if env_path.exists():
+            with open(env_path, 'r') as f:
+                lines = f.readlines()
+
+            # Update the line with the mock mode setting
+            updated = False
+            with open(env_path, 'w') as f:
+                for line in lines:
+                    if line.strip().startswith(env_key):
+                        f.write(f"{env_key}={'true' if update.enabled else 'false'}\n")
+                        updated = True
+                    else:
+                        f.write(line)
+
+            if updated:
+                logger.info(f"Updated {env_key} in .env file")
+            else:
+                logger.warning(f"{env_key} not found in .env file")
+
+        return {
+            "status": "success",
+            "vehicle": vehicle,
+            "mock_mode": update.enabled,
+            "message": f"{vehicle.capitalize()} mock mode {'enabled' if update.enabled else 'disabled'}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update {vehicle} mock mode: {e}")
         raise HTTPException(status_code=500, detail=str(e))
